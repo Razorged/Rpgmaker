@@ -1,0 +1,965 @@
+#------------------------------------------------------------------------------#
+#  Galv's Animated Battlers
+#------------------------------------------------------------------------------#
+#  For: RPGMAKER VX ACE
+#  Version 1.2
+#------------------------------------------------------------------------------#
+#  2014-01-17 - Version 1.2 - compatibility fix when using with Actor Duel Game
+#  2013-05-06 - Version 1.1 - added move speed for melee attacks
+#  2013-05-04 - Version 1.0 - release
+#------------------------------------------------------------------------------#
+#  Holder's animated battler spritesheets can be found here:
+#  http://animatedbattlers.wordpress.com/
+#------------------------------------------------------------------------------#
+#  This is just another animated battler script that uses holder-style animated
+#  battler sheets. There are better ones out there, this one is just my basic
+#  implementation in an attempt to continue improving my scripting.
+#
+#  This script works in the default battle system but is optimised for use with
+#  Yanfly's battle script. Not tested with other battle scripts. Put this script
+#  below any battle scripts you try it with.
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+#  Note tag for ENEMIES and ACTORS
+#------------------------------------------------------------------------------#
+#
+#  <battler: filename>    # filename is the animated spritesheet located in
+#                         # /Graphics/Battlers/
+#                         # Required for actors, optional for enemies.
+#
+#  <stationary_sub>       # will not re-position themselves in front of an ally
+#                         # they are covering/substituting for.
+#
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+#  Note tags for SKILLS, ITEMS and STATES
+#------------------------------------------------------------------------------#
+#
+#  <pose: x>    # The skill, item or state will use x pose row.
+#               # If a skill does not have this tag, it will use row 6.
+#               # If an item does not have this tag, it will use row 5.
+#               # If a state does not have this tag, it will use row 2. If a
+#               # battler has multiple states, it uses the highest priority.
+#
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+#  Note tag for SKILLS, ITEMS and ACTORS
+#------------------------------------------------------------------------------#
+#
+#  <melee: x>  # Normal attacks for Actors, items being used or skills being
+#              # used that have this tag will make the actor dash into close
+#              # range before doing the action. x is the dash speed.
+#              # 0 = instant.  1 is slow, higher numbers is faster
+#
+#------------------------------------------------------------------------------#
+
+#------------------------------------------------------------------------------#
+#  SCRIPT CALLS
+#------------------------------------------------------------------------------#
+#
+#  change_battler(id,"filename")  # Changes actor's animated battler sheet.
+#
+#------------------------------------------------------------------------------#
+
+($imported ||= {})["Galv_Animated_Battlers"] = true
+module GALV_BAT
+  
+#-------------------------------------------------------------------------------
+#
+#  * SETTINGS
+#
+#-------------------------------------------------------------------------------
+  
+  COLS = 4             # How many columns your animated spritesheet uses
+  ROWS = 12           # How many rows your animated spritesheet uses
+  
+  ENEMY_FLIP = true    # true = flip enemy battler image horizontally
+  ACTOR_FLIP = false   # true = flip actor battler image horizonatally
+  
+  HP_CRISIS = 0.25     # Remaining hp before poor status pose (0.25 = 25%)
+  
+  ONE_ANIM = [3,4,5,6,7,11]  # Poses that will NOT keep repeating their frames
+
+
+  XOFFSET = 80    # horizonatal distance from opponent when using <melee: x>
+  YOFFSET = 0     # vertical distance from opponent when using <melee: x>
+  
+  SXOFFSET = 40   # horizontal distance from ally when substituting
+  SYOFFSET = 0    # vertical distance from ally when substituting
+  
+#------------------------------------------------------------------------------#
+  ACTOR_POSITIONS = [ # don't touch
+#------------------------------------------------------------------------------#
+#  Set x,y locations of your actors on the battle screen
+#------------------------------------------------------------------------------#
+
+    [440,150],   # Party member 1 [x,y]
+    [460,180],   # Party member 2 [x,y]
+    [480,210],   # Party member 3 [x,y]
+    [500,260],   # Party member 4 [x,y]
+
+#------------------------------------------------------------------------------#
+  ] #don't touch
+#------------------------------------------------------------------------------#
+
+#-------------------------------------------------------------------------------
+#  POSES USED FOR SPECIAL ACTIONS:
+#-------------------------------------------------------------------------------
+
+   COUNTER_ATTACK = 4       # Pose when counter attacking
+   MAGIC_REFLECT  = 7       # Pose when reflecting magic 
+   EVASION        = [9,8]   # Move back then move forward poses to evade.
+
+#-------------------------------------------------------------------------------
+#  POSE INFORMATION:
+#------------------------------------------------------------------------------#
+#  DEFAULT SPRITESHEET POSES (HOLDER SETUP)
+#------------------------------------------------------------------------------#
+#  ROW     POSE              
+#
+#   0      Idle
+#   1      Guard
+#   2      Poor Status
+#   3      Get hit
+#   4      Normal Attack
+#   5      Use Item
+#   6      Use Skill
+#   7      Use Magic
+#   8      Move toward
+#   9      Move back
+#   10     Victory
+#   11     Battle Start
+#   12     Dead
+#   13     Spritesheet Info
+#------------------------------------------------------------------------------#
+
+#-------------------------------------------------------------------------------
+#
+#  * END SETTINGS
+#
+#-------------------------------------------------------------------------------
+
+end
+
+#------------------------------------------------------------------------------#
+#  OVERWRITTEN METHODS
+#------------------------------------------------------------------------------#
+#  class Spriteset_Battle
+#    - create_enemies
+#    - create_actors
+#    - update_actors
+#------------------------------------------------------------------------------#
+
+
+    #----------------------#
+#---|   GAME_INTERPRETER   |----------------------------------------------------
+    #----------------------#
+
+class Game_Interpreter
+  def change_battler(id,name)
+    $game_actors[id].animated_battler = name
+  end
+end # Game_Interpreter
+
+
+    #-------------------#
+#---|   RPG::BASEITEM   |-------------------------------------------------------
+    #-------------------#
+
+class RPG::BaseItem
+  def pose
+    if @pose.nil?
+      if @note =~ /<pose: (.*)>/i
+        @pose = $1.to_i
+      else
+        @pose = nil
+      end
+    end
+    @pose
+  end
+end # RPG::BaseItem
+
+
+    #----------------------#
+#---|   GAME_BATTLERBASE   |----------------------------------------------------
+    #----------------------#
+
+class Game_BattlerBase
+  alias galv_animb_gbb_appear appear
+  def appear
+    return if SceneManager.scene_is?(Scene_Map)
+    galv_animb_gbb_appear
+  end
+end # Game_BattlerBase
+
+
+    #------------------#
+#---|   GAME_BATTLER   |--------------------------------------------------------
+    #------------------#
+
+class Game_Battler < Game_BattlerBase
+  attr_accessor :animated_battler
+  attr_accessor :pose
+  attr_accessor :freeze_pose
+  attr_accessor :bactivated
+  attr_accessor :move_target
+  attr_accessor :orx
+  attr_accessor :ory
+  attr_accessor :reset_pose
+  attr_accessor :move_speed
+  
+  def setup_animated_battler
+    @pose = 0
+    @move_speed = 0
+    char = actor? ? actor : enemy
+    @animated_battler = $1 if char.note =~ /<battler:[ ](.*)>/i
+  end
+  
+  def do_pose(col)
+    @reset_pose = true
+    @pose = col
+    @freeze_pose = true if GALV_BAT::ONE_ANIM.include?(@pose)
+  end
+  
+  alias galv_animb_gbgbb_on_turn_end on_turn_end
+  def on_turn_end
+    galv_animb_gbgbb_on_turn_end
+    set_idle_pose
+  end
+  
+  alias galv_animb_gbgbb_on_action_end on_action_end
+  def on_action_end
+    galv_animb_gbgbb_on_action_end
+    set_idle_pose
+  end
+  
+  def set_idle_pose
+    return if !@bactivated
+    if death_state?
+      do_pose(12)
+    elsif guard?
+      do_pose(1)
+    elsif !@states.empty?
+      do_pose(state_pose)
+    elsif low_life?
+      do_pose(2)
+    else
+      do_pose(0)
+    end
+    @freeze_pose = false unless GALV_BAT::ONE_ANIM.include?(@pose)
+  end
+  
+  def low_life?
+    @hp < (mhp * GALV_BAT::HP_CRISIS)
+  end
+  
+  def state_pose
+    prio = 0
+    prio_state = 0
+    @states.each { |sid|
+      if $data_states[sid].priority > prio
+        prio_state = sid
+        prio = $data_states[sid].priority
+      end
+    }
+    if prio_state <= 0 || !$data_states[prio_state].pose
+      return 2
+    else
+      $data_states[prio_state].pose
+    end
+  end
+
+  alias galv_animb_gbgbb_add_state add_state
+  def add_state(state_id)
+    galv_animb_gbgbb_add_state(state_id)
+    set_idle_pose
+  end
+  
+  alias galv_animb_gbgbb_remove_state remove_state
+  def remove_state(state_id)
+    dead = dead?
+    galv_animb_gbgbb_remove_state(state_id)
+    set_idle_pose if state_id != 1 && !dead? || dead
+  end
+  
+  alias galv_animb_gbgbb_execute_damage execute_damage
+  def execute_damage(user)
+    perform_get_hit if @result.hp_damage > 0
+    galv_animb_gbgbb_execute_damage(user)
+    if !$imported["YEA-BattleEngine"]
+      SceneManager.scene.wait(15)
+      set_idle_pose
+    end
+  end
+  
+  def perform_get_hit
+    if !dead? && !guard? && $game_party.in_battle && @animated_battler
+      do_pose(3)
+      @sprite_effect_type = :get_hit
+    end
+  end
+  
+  def perform_counter_attack
+    if !dead? && $game_party.in_battle && @animated_battler
+      do_pose(GALV_BAT::COUNTER_ATTACK)
+      @sprite_effect_type = :counter_attack
+    end
+  end
+  
+  def perform_magic_reflect
+    if !dead? && $game_party.in_battle && @animated_battler
+      do_pose(GALV_BAT::MAGIC_REFLECT)
+      @sprite_effect_type = :counter_attack
+    end
+  end
+
+  def perform_victory
+    if !dead? && @animated_battler
+      do_pose(10)
+    end
+  end
+
+  def perform_enter_battle
+    @bactivated = true
+    if !dead? && @animated_battler
+      @pose = 11
+      @sprite_effect_type = :enter_battle
+    end
+  end
+  
+  def perform_dash(dash_type,target)
+    if !dead? && @animated_battler
+      @move_target = target
+      pose = dash_type == :dash_forward ? 8 : 9
+      do_pose(pose)
+      @sprite_effect_type = dash_type
+    end
+  end
+  
+  def perform_travel(dash_type,target,speed)
+    @move_target = target
+    @move_speed = speed
+    do_pose(8)
+    @sprite_effect_type = dash_type
+  end
+  
+  def moving?
+    @move_speed > 0
+  end
+  
+  def perform_dodge
+    if !dead? && @animated_battler
+      do_pose(GALV_BAT::EVASION[0])
+      @sprite_effect_type = :dodge
+    end
+  end
+
+  alias galv_animb_gbgbb_on_battle_start on_battle_start
+  def on_battle_start
+    perform_enter_battle
+    galv_animb_gbgbb_on_battle_start
+  end
+
+  def init_animated_battler(i)
+    @sprite_effect_type = :appear
+    @bactivated = false
+    @pose = alive? ? 11 : 12
+    if actor?
+      @screen_x = GALV_BAT::ACTOR_POSITIONS[i][0]
+      @orx = GALV_BAT::ACTOR_POSITIONS[i][0]
+      @screen_y = GALV_BAT::ACTOR_POSITIONS[i][1]
+      @ory = GALV_BAT::ACTOR_POSITIONS[i][1]
+    else
+      @orx = @screen_x
+      @ory = @screen_y
+    end
+  end
+  
+  def reinit_battler(i)
+    if actor?
+      @screen_x = GALV_BAT::ACTOR_POSITIONS[i][0]
+      @orx = GALV_BAT::ACTOR_POSITIONS[i][0]
+      @screen_y = GALV_BAT::ACTOR_POSITIONS[i][1]
+      @ory = GALV_BAT::ACTOR_POSITIONS[i][1]
+    else
+      @orx = @screen_x
+      @ory = @screen_y
+    end
+    @bactivated = true
+  end
+  
+  alias galv_animb_gbgbb_item_apply item_apply
+  def item_apply(user, item)
+    galv_animb_gbgbb_item_apply(user, item)
+    if @result.evaded
+      perform_dodge
+    end
+  end
+end # Game_Battler < Game_BattlerBase
+
+
+    #----------------#
+#---|   GAME_ACTOR   |----------------------------------------------------------
+    #----------------#
+
+class Game_Actor < Game_Battler
+  attr_accessor :screen_x
+  attr_accessor :screen_y
+  
+  def screen_x; screen_x = @screen_x; end
+  def screen_y; screen_y = @screen_y; end
+  def screen_z; 100; end
+  
+  alias galv_animb_gagb_initialize initialize
+  def initialize(actor_id)
+    galv_animb_gagb_initialize(actor_id)
+    setup_animated_battler
+    @screen_x = 0
+    @screen_y = 0
+  end
+  
+  def sub_pose(target)
+    if !dead? && @animated_battler
+      return if $data_actors[@actor_id].note =~ /<stationary_sub>/i
+      @screen_x = target.screen_x - GALV_BAT::SXOFFSET
+      @screen_y = target.screen_y - GALV_BAT::SYOFFSET
+      @sprite_effect_type = :substitute
+    end
+  end
+  
+  def return_to_position
+    if !dead? && @animated_battler
+      @screen_x = @orx
+      @screen_y = @ory
+    end
+  end
+end # Game_Actor < Game_Battler
+
+
+    #----------------#
+#---|   GAME_ENEMY   |----------------------------------------------------------
+    #----------------#
+
+class Game_Enemy < Game_Battler
+  alias galv_animb_gegb_initialize initialize
+  def initialize(index, enemy_id)
+    galv_animb_gegb_initialize(index, enemy_id)
+    setup_animated_battler
+  end
+  
+  def sub_pose(target)
+    if !dead? && @animated_battler
+      return if $data_enemies[@enemy_id].note =~ /<stationary_sub>/i
+      @screen_x = target.screen_x + GALV_BAT::SXOFFSET
+      @screen_y = target.screen_y + GALV_BAT::SYOFFSET
+      @sprite_effect_type = :substitute
+    end
+  end
+  
+  def return_to_position
+    if !dead? && @animated_battler
+      @screen_x = @orx
+      @screen_y = @ory
+    end
+  end
+end # Game_Enemy < Game_Battler
+
+
+    #-------------------#
+#---|   BATTLEMANAGER   |-------------------------------------------------------
+    #-------------------#
+
+module BattleManager
+  class << self
+    alias galv_animb_bm_process_victory process_victory
+  end
+  
+  def self.process_victory
+    $game_party.battle_members.each { |actor| actor.perform_victory }
+    galv_animb_bm_process_victory
+  end
+end # BattleManager
+
+
+    #------------------#
+#---|   SCENE_BATTLE   |--------------------------------------------------------
+    #------------------#
+
+class Scene_Battle < Scene_Base
+  alias galv_animb_sbsb_start start
+  def start
+    position_battlers
+    galv_animb_sbsb_start
+  end
+
+  def position_actors
+    $game_party.battle_members.each_with_index { |battler,i|
+      battler.reinit_battler(i)
+    }
+    @spriteset.refresh_actors
+  end
+  
+  def position_battlers
+    galv_all_battle_members.each_with_index { |battler,i|
+      battler.init_animated_battler(i)
+    }
+  end
+  
+  def galv_all_battle_members
+    $game_party.battle_members + $game_troop.members
+  end
+  
+  alias galv_animb_sbsb_show_animation show_animation
+  def show_animation(targets, animation_id)
+    @move_target = targets[0]
+    check_dash
+    set_pose
+    galv_animb_sbsb_show_animation(targets, animation_id)
+  end
+  
+  def check_dash
+    move = move_to_target
+    if move > 0
+      @subject.perform_travel(:move_forward,@move_target,move)
+      update_for_wait while @subject.moving?
+    elsif move == 0
+      @subject.perform_dash(:dash_forward,@move_target)
+      wait(30)
+    end
+  end
+  
+  def move_to_target
+    return -1 if no_action && !@moveitem
+    @moveitem ||= @subject.current_action.item
+    return $1.to_i if @moveitem.note =~ /<melee: (.*)>/i
+    if @moveitem.is_a?(RPG::Skill) && @moveitem.id == 1
+      char = @subject.actor? ? $data_actors[@subject.id] : 
+        $data_enemies[@subject.enemy_id]
+      return $1.to_i if char.note =~ /<melee: (.*)>/i
+    end
+    return -1
+  end
+  
+  def no_action
+    !@subject || !@subject.current_action || !@subject.current_action.item
+  end
+  
+  alias galv_animb_sbsb_process_action_end process_action_end
+  def process_action_end
+    if @subject.screen_x != @subject.orx
+      @subject.perform_dash(:dash_back,@subject)
+      wait(25)
+    end
+    galv_animb_sbsb_process_action_end
+    @moveitem = nil
+  end
+  
+  alias galv_animb_sbsb_invoke_counter_attack invoke_counter_attack
+  def invoke_counter_attack(target,item)
+    target.perform_counter_attack
+    galv_animb_sbsb_invoke_counter_attack(target,item)
+  end
+  
+  alias galv_animb_sbsb_invoke_magic_reflection invoke_magic_reflection
+  def invoke_magic_reflection(target, item)
+    target.perform_magic_reflect
+    galv_animb_sbsb_invoke_magic_reflection(target, item)
+  end
+    
+  def set_pose
+    return if no_action
+    item = @subject.current_action.item
+    if item.is_a?(RPG::Skill)
+      case item.id
+      when 2  # guard
+        @subject.do_pose(1)
+      when 1  # attack
+        @subject.do_pose(4)
+        wait(20) if $imported["YEA-BattleEngine"]
+      else
+        unique = item.pose ? item.pose : 6
+        @subject.do_pose(unique)
+      end
+    elsif item.is_a?(RPG::Item)
+      unique = item.pose ? item.pose : 5
+      @subject.do_pose(unique)
+      wait(30) if $imported["YEA-BattleEngine"]
+    end
+  end
+end # Scene_Battle < Scene_Base
+
+
+    #----------------------#
+#---|   WINDOW_BATTLELOG   |----------------------------------------------------
+    #----------------------#
+
+class Window_BattleLog < Window_Selectable
+  alias galv_animb_wblws_display_substitute display_substitute
+  def display_substitute(substitute, target)
+    substitute.sub_pose(target)
+    galv_animb_wblws_display_substitute(substitute, target)
+  end
+end
+
+
+    #----------------------#
+#---|   SPRITESET_BATTLE   |----------------------------------------------------
+    #----------------------#
+
+class Spriteset_Battle
+  #OVERWRITE
+  def create_enemies
+    @enemy_sprites = $game_troop.members.reverse.collect do |enemy|
+      if enemy.animated_battler
+        Sprite_AnimBattler.new(@viewport1, enemy)
+      else
+        Sprite_Battler.new(@viewport1, enemy)
+      end
+    end
+  end
+  
+  # OVERWRITE
+  def create_actors
+    @actor_sprites = $game_party.battle_members.reverse.collect do |actor|
+      Sprite_ActorBattler.new(@viewport1, actor)
+    end
+  end
+  
+  # OVERWRITE
+  def update_actors
+    need_update = false
+    @actor_sprites.each_with_index do |sprite, i|
+      sprite.battler = $game_party.battle_members[i]
+      if sprite.battler
+        sprite.update
+      else
+        need_update = true
+      end
+    end
+    need_update = true if @actor_sprites.count < $game_party.battle_members.count
+    if need_update
+      SceneManager.scene.position_actors
+    end
+  end
+  
+  def refresh_actors
+    dispose_actors
+    create_actors
+  end
+end # Spriteset_Battle
+
+
+    #--------------------#
+#---|   SPRITE_BATTLER   |------------------------------------------------------
+    #--------------------#
+
+class Sprite_Battler < Sprite_Base
+  alias galv_animb_spritebsb_update update
+  def update
+    if @battler && @battler.animated_battler && @galv_animb
+      super
+    else
+      galv_animb_spritebsb_update
+    end
+  end
+end # Sprite_Battler < Sprite_Base
+
+
+    #------------------------#
+#---|   SPRITE_ANIMBATTLER   |--------------------------------------------------
+    #------------------------#
+
+class Sprite_AnimBattler < Sprite_Battler
+  def initialize(viewport, battler = nil)
+    init_variables
+    super(viewport,battler)
+  end
+
+  def init_variables
+    @pattern = 0
+    @speed_timer = 0
+    @pose = 0
+    @galv_animb = true
+  end
+
+  def update
+    if @battler && @battler.animated_battler
+      update_bitmap
+      update_pose
+      update_src_rect
+      update_anim
+      update_position
+      setup_new_effect
+      setup_new_animation
+      update_effect
+    end
+    super
+  end
+
+  def update_bitmap
+    new_bitmap = Cache.battler(@battler.animated_battler,
+      @battler.battler_hue)
+    if bitmap != new_bitmap
+      self.bitmap = new_bitmap
+      spritesheet_normal
+      init_visibility
+    end
+  end
+
+  def spritesheet_normal
+    @cw = bitmap.width / GALV_BAT::COLS
+    @ch = bitmap.height / GALV_BAT::ROWS
+    self.ox = @cw / 2
+    self.oy = @ch
+    set_mirror
+  end
+
+  def set_mirror
+    self.mirror = GALV_BAT::ENEMY_FLIP
+  end
+
+  def update_pose
+    if @pose != @battler.pose
+      @pattern = 0
+      @pose = @battler.pose
+    end
+    if @battler.reset_pose
+      @pose = 0
+      @battler.reset_pose = false
+    end
+  end
+
+  def update_src_rect
+    if @pattern >= GALV_BAT::COLS
+      @pattern = 0 unless freeze_pose?
+    end
+    sx = @pattern * @cw
+    sy = @battler.pose * @ch
+    self.src_rect.set(sx, sy, @cw, @ch)
+  end
+
+  def freeze_pose?
+    @battler.freeze_pose && @pattern == GALV_BAT::COLS - 1
+  end
+
+  def update_anim
+    return if !@battler.bactivated
+    @speed_timer += 1
+    if @speed_timer > 8
+      @pattern += 1 unless freeze_pose?
+      @speed_timer = 0
+    end
+  end
+
+  def update_position
+    self.x = @battler.screen_x
+    self.y = @battler.screen_y
+    self.z = @battler.screen_z
+  end
+
+  def start_effect(effect_type)
+    @effect_type = effect_type
+    case @effect_type
+    when :counter_attack,:magic_reflect,:get_hit
+      @effect_duration = 40
+      @battler_visible = true
+    when :enter_battle
+      @effect_duration = 35
+      @battler_visible = true
+    when :dash_forward,:dash_back
+      @effect_duration = 15
+      @battler_visible = true
+    when :move_forward
+      @effect_duration = 500
+      @move_duration = @effect_duration
+      @battler_visible = true
+    when :dodge
+      @effect_duration = 20
+      @battler_visible = true
+    when :substitute
+      @effect_duration = 20
+      @battler_visible = true
+    end
+    super
+  end
+
+  def update_effect
+    if @effect_duration > 0
+      case @effect_type
+      when :get_hit, :substitute
+        update_generic_pose
+      when :counter_attack,:magic_reflect
+        update_counter
+      when :enter_battle
+        update_enter_battle
+      when :dash_forward
+        update_dash_forward
+      when :move_forward
+        update_move_forward
+      when :dash_back
+        update_dash_back
+      when :dodge
+        update_dodge
+      end
+    end
+    super
+  end
+
+  def revert_to_normal
+    return if do_revert?
+    super
+    spritesheet_normal
+  end
+  
+  def do_revert?
+    @effect_type == :whiten || @battler.dead?
+  end
+
+  def update_generic_pose
+    if @effect_duration == 1
+      @battler.return_to_position
+      @battler.set_idle_pose
+    end
+  end
+  
+  def xoff; @battler.actor? ? GALV_BAT::XOFFSET : -GALV_BAT::XOFFSET; end
+  def yoff; @battler.actor? ? GALV_BAT::YOFFSET : -GALV_BAT::YOFFSET; end
+
+  def update_dash_forward
+    if @battler.actor? && @battler.screen_x > Graphics.width / 2
+      @battler.screen_x -= 3
+    elsif @battler.enemy? && @battler.screen_x < Graphics.width / 2
+      @battler.screen_x += 3
+    end
+    update_disappear
+    if @effect_duration == 1
+      @battler.screen_x = @battler.move_target.screen_x + xoff
+      @battler.screen_y = @battler.move_target.screen_y + yoff
+      start_effect(:appear)
+    end
+  end
+  
+  def update_dash_back
+    if @battler.actor? && @battler.screen_x < Graphics.width / 2
+      @battler.screen_x += 3
+    elsif @battler.enemy? && @battler.screen_x > Graphics.width / 2
+      @battler.screen_x -= 3
+    end
+    update_disappear
+    if @effect_duration == 1
+      @battler.screen_x = @battler.move_target.orx
+      @battler.screen_y = @battler.move_target.ory
+      start_effect(:appear)
+    end
+  end
+  
+  def update_move_forward
+    if @battler.actor?
+      @battler.screen_x -= x_difference(@battler,@battler.move_target)
+    elsif @battler.enemy?
+      @battler.screen_x += x_difference(@battler,@battler.move_target)
+    end
+    @battler.screen_y += y_difference(@battler,@battler.move_target)
+  end
+
+  def y_difference(bat,tar)
+    yof = bat.actor? ? yoff : -yoff
+    y_diff = bat.ory - (tar.screen_y + yof)
+    x_diff = bat.orx - (tar.screen_x + xoff)
+    y_move = y_diff.to_f / (x_diff.to_f / [@battler.move_speed,1].max).to_f
+    return bat.actor? ? -y_move : y_move
+  end
+  
+  def x_difference(bat,tar)
+    if bat.actor? && bat.screen_x <= (tar.screen_x + xoff) ||
+        bat.enemy? && bat.screen_x >= (tar.screen_x + xoff)
+      @battler.move_speed = 0
+      @effect_duration = 1
+      return 0
+    end
+    return @battler.move_speed
+  end
+  
+  def update_dodge
+    if @effect_duration == 1
+      @battler.screen_x = @battler.orx
+      @battler.screen_y = @battler.ory
+      @battler.set_idle_pose
+    elsif @effect_duration >= 10
+      @battler.actor? ? @battler.screen_x += 3 : @battler.screen_x -= 3
+    else
+      @battler.pose = GALV_BAT::EVASION[1]
+      @battler.actor? ? @battler.screen_x -= 3 : @battler.screen_x += 3
+    end
+  end
+
+  def update_enter_battle
+    if @effect_duration == 1
+      @battler.bactivated = true
+      @battler.set_idle_pose
+    end
+  end
+
+  def update_counter
+    self.color.set(255, 255, 255, 0)
+    self.color.alpha = 128 - (26 - @effect_duration) * 10
+    @battler.set_idle_pose if @effect_duration == 1
+  end
+
+  def update_collapse; end
+end # Sprite_AnimBattler < Sprite_Base
+
+
+    #-------------------------#
+#---|   SPRITE_ACTORBATTLER   |-------------------------------------------------
+    #-------------------------#
+
+class Sprite_ActorBattler < Sprite_AnimBattler
+  def initialize(viewport, battler = nil)
+    super(viewport,battler)
+  end
+  
+  def dispose; super; end
+  def update; super; end
+
+  def set_mirror
+    self.mirror = GALV_BAT::ACTOR_FLIP
+  end
+
+  def update_position
+    self.x = @battler.screen_x
+    self.y = @battler.screen_y
+    self.z = @battler.screen_z
+  end
+  
+  def init_visibility
+    self.opacity = 255
+  end
+end # Sprite_ActorBattler < Sprite_AnimBattler
+
+
+    #------------------------#
+#---|   WINDOW_BATTLEENEMY   |--------------------------------------------------
+    #------------------------#
+
+class Window_BattleEnemy < Window_Selectable
+  if $imported["YEA-BattleEngine"]
+    def create_flags
+      set_select_flag(:any)
+      select(-1)
+      return if $game_temp.battle_aid.nil?
+      if $game_temp.battle_aid.need_selection?
+        select(-1)
+      elsif $game_temp.battle_aid.for_all?
+        select(-1)
+        set_select_flag(:all)
+      elsif $game_temp.battle_aid.for_random?
+        select(-1)
+        set_select_flag(:random)
+      end
+    end
+  end
+end # Window_BattleEnemy < Window_Selectable
